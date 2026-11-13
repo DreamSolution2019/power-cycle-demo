@@ -1,0 +1,1161 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>전원 OFF→ON 각도 유지 | 드림솔루션</title>
+<!--
+  EN25-Absolute 전원을 껐다 켜도 각도를 기억하는지 확인 (웹 버전)
+  - power_cycle_demo.py 를 웹으로 옮긴 것
+  - Chrome / Edge 에서 이 파일을 더블클릭해서 열면 됩니다 (Web Serial API 사용)
+  - 엔코더 출력: 38400bps, 100Hz, "$ANG,152.3,11.644,110\r\n"
+  - 주소 끝에 ?demo 를 붙이면 엔코더 없이 체험 모드로 열림
+-->
+<style>
+  :root {
+    --bg: #f4f6f9; --card: #ffffff; --text: #1d2330; --muted: #6b7384;
+    --line: #e2e6ee; --accent: #2f6fed;
+    --good: #1f9d55; --good-bg: #e7f6ee; --bad: #e5484d; --bad-bg: #fdecec;
+    --off: #8a93a3; --off-bg: #eceef2; --warn: #d98a00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b2029; --text: #e8ebf1; --muted: #9aa3b2;
+      --line: #2c3340; --accent: #6b9bff;
+      --good: #4cc68a; --good-bg: #16301f; --bad: #ff6b6f; --bad-bg: #3a1d20;
+      --off: #7d8696; --off-bg: #232832; --warn: #f0b040;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 20px 16px 40px; }
+  /* 헤더: 로고 + 제목 + 상품 링크 */
+  header { display: flex; align-items: center; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
+  .logo {
+    /* 160x160 로고에서 글씨가 있는 가운데 띠만 보이도록 잘라서 원본 크기로 표시 */
+    width: 160px; height: 64px; object-fit: cover; object-position: center;
+    border-radius: 10px; flex-shrink: 0;
+  }
+  .titles { flex: 1; min-width: 240px; }
+  .brand { font-size: 13px; font-weight: 600; color: var(--accent); letter-spacing: .02em; }
+  h1 { font-size: 24px; margin: 2px 0 4px; }
+  .sub { color: var(--muted); font-size: 14px; }
+  .product-link {
+    display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+    padding: 10px 16px; border-radius: 10px; font-size: 14px; font-weight: 600;
+    background: var(--accent); color: #fff; text-decoration: none;
+  }
+  .product-link:hover { filter: brightness(1.08); }
+  @media (max-width: 760px) { .product-link { width: 100%; justify-content: center; } }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .full { grid-column: 1 / -1; }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 14px; padding: 18px; min-width: 0;
+  }
+  .card h2 { font-size: 15px; margin: 0 0 12px; color: var(--muted); font-weight: 600; }
+  button {
+    font: inherit; font-size: 14px; padding: 9px 14px; border-radius: 9px;
+    border: 1px solid var(--line); background: var(--card); color: var(--text);
+    cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .45; cursor: default; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .conn { font-size: 13px; color: var(--muted); margin-top: 10px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+         background: #999; margin-right: 6px; vertical-align: middle; }
+  .dot.on { background: var(--good); }
+  .dot.wait { background: var(--warn); }
+
+  /* 전원 상태 띠 */
+  .power {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 14px 18px; font-size: 15px;
+  }
+  .power .badge {
+    font-weight: 700; font-size: 18px; padding: 6px 14px; border-radius: 999px;
+    background: var(--off-bg); color: var(--off); white-space: nowrap;
+  }
+  .power.on .badge { background: var(--good-bg); color: var(--good); }
+  .power.off .badge { background: var(--bad-bg); color: var(--bad); }
+  .power .msg { flex: 1; min-width: 220px; color: var(--muted); }
+  .power .msg b { color: var(--text); }
+
+  /* 비교 패널 */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 760px) { .compare { grid-template-columns: 1fr; } }
+  .panel { text-align: center; transition: background .3s, border-color .3s; }
+  .panel .who { font-weight: 700; font-size: 16px; }
+  .panel .who small { display: block; font-weight: 400; font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .panel .big {
+    font-size: 54px; font-weight: 800; font-variant-numeric: tabular-nums;
+    line-height: 1.1; margin: 4px 0 2px;
+  }
+  .panel .note { font-size: 14px; color: var(--muted); min-height: 2.8em; }
+  .panel.good { background: var(--good-bg); border-color: var(--good); }
+  .panel.good .big, .panel.good .verdict { color: var(--good); }
+  .panel.bad { background: var(--bad-bg); border-color: var(--bad); }
+  .panel.bad .big, .panel.bad .verdict { color: var(--bad); }
+  .panel.dim .big { color: var(--off); }
+  .panel .verdict { font-weight: 700; font-size: 15px; min-height: 1.4em; margin-top: 4px; }
+  .panel .extra { display: flex; justify-content: center; gap: 22px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+  .panel .extra b { color: var(--text); font-variant-numeric: tabular-nums; }
+  svg.dial { display: block; margin: 0 auto; max-width: 100%; }
+
+  /* 결과 요약 */
+  .result {
+    display: none; margin-top: 16px; padding: 14px 18px; border-radius: 12px;
+    background: var(--bg); font-size: 15px; line-height: 1.7;
+  }
+  .result b { font-variant-numeric: tabular-nums; }
+
+  /* 설정 */
+  label.set { display: block; font-size: 14px; margin: 12px 0 4px; }
+  label.set b { float: right; font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; }
+  .check { display: flex; align-items: center; gap: 8px; font-size: 14px; margin-top: 12px; }
+  .help { font-size: 13px; color: var(--muted); line-height: 1.7; margin: 12px 0 0; padding-left: 18px; }
+  .sim { display: none; margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }
+  .switch {
+    font-weight: 700; min-width: 140px;
+  }
+  .switch.on { background: var(--good); border-color: var(--good); color: #fff; }
+  .switch.off { background: var(--bad); border-color: var(--bad); color: #fff; }
+
+  /* 기록 표 */
+  .tablewrap { overflow-x: auto; margin-top: 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 620px; }
+  th, td { padding: 7px 8px; border-bottom: 1px solid var(--line); text-align: center; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .tag.still { background: var(--good-bg); color: var(--good); }
+  .tag.moved { background: var(--bg); color: var(--accent); }
+  .stats { display: flex; gap: 22px; flex-wrap: wrap; margin-top: 10px; font-size: 13px; color: var(--muted); }
+  .stats b { color: var(--text); font-size: 15px; font-variant-numeric: tabular-nums; }
+  .empty { color: var(--muted); font-size: 14px; padding: 14px 0; text-align: center; }
+
+  .warn { background: #fff4d6; color: #6b4b00; border-radius: 10px;
+          padding: 12px 14px; font-size: 14px; margin-bottom: 16px; display: none; }
+
+  /* 체험 모드 배너 */
+  .demo-banner {
+    display: none; align-items: center; gap: 14px; flex-wrap: wrap;
+    background: var(--card); border: 2px solid var(--accent); border-radius: 14px;
+    padding: 14px 18px; margin-bottom: 16px; font-size: 14px;
+  }
+  .demo-banner .msg { flex: 1; min-width: 240px; line-height: 1.5; }
+  .demo-banner b { color: var(--accent); }
+
+  /* 소스코드 다운로드 */
+  .promo p { margin: 0 0 12px; font-size: 14px; line-height: 1.6; }
+  .promo ul { margin: 12px 0 0; padding-left: 18px; font-size: 13px; color: var(--muted); line-height: 1.7; }
+  .promo code { background: var(--bg); padding: 1px 6px; border-radius: 5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <img class="logo" src="data:image/jpeg;base64,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" alt="Dream Solution 드림솔루션">
+    <div class="titles">
+      <div class="brand">드림솔루션 · 앱솔루트 로터리엔코더 EN25-Absolute</div>
+      <h1>전원을 꺼도 각도를 기억할까?</h1>
+      <div class="sub">전원을 끈 채로 샤프트를 돌리고 다시 켜보세요. EN25-Absolute는 켜자마자 현재 각도를 알려줘요</div>
+    </div>
+    <a class="product-link" href="https://www.dreamparts.co.kr/goods/goods_view.php?goodsNo=1000000042"
+       target="_blank" rel="noopener">상품 상세정보 보기 ↗</a>
+  </header>
+
+  <!-- 체험 모드: 주소 뒤에 ?demo 를 붙이거나, 엔코더 연결이 안 되는 브라우저(휴대폰 등)에서 표시 -->
+  <div class="demo-banner" id="demoBanner">
+    <div class="msg">
+      <b>🎬 체험 모드</b> — 엔코더 없이 가상의 엔코더가 전원을 껐다 켜며 자동으로 시연해요.
+      실제 EN25-Absolute를 연결하면 이 화면이 그대로 동작해요.
+    </div>
+    <button class="primary" id="btnDemo">▶ 체험 시작 (소리 켜짐)</button>
+    <a class="product-link" href="https://www.dreamparts.co.kr/goods/goods_view.php?goodsNo=1000000042"
+       target="_blank" rel="noopener">EN25-Absolute 구매하기 ↗</a>
+  </div>
+
+  <div class="warn" id="noSerial">
+    이 브라우저는 USB 시리얼 연결(Web Serial)을 지원하지 않아요.
+    실제 엔코더 연결은 PC의 <b>Chrome</b> 또는 <b>Edge</b> 에서 할 수 있어요. 위의 ‘체험 시작’으로 동작을 미리 볼 수 있어요.
+  </div>
+
+  <div class="grid">
+    <!-- 전원 상태 -->
+    <div class="card power full" id="powerCard">
+      <span class="badge" id="pwBadge">연결 대기</span>
+      <span class="msg" id="pwMsg">‘엔코더 연결’ 버튼을 눌러 COM 포트를 선택하세요.</span>
+    </div>
+
+    <!-- 비교 -->
+    <div class="card full">
+      <div class="compare">
+        <div class="card panel" id="panAbs">
+          <div class="who">EN25-Absolute <small>실제 측정값 (앱솔루트)</small></div>
+          <svg class="dial" id="dialAbs" viewBox="0 0 200 200" width="180" height="180"></svg>
+          <div class="big" id="absVal">–</div>
+          <div class="verdict" id="absVerdict"></div>
+          <div class="note" id="absNote">전원이 켜지는 순간 현재 각도가 바로 나와요</div>
+          <div class="extra">
+            <span>누적 회전수 <b id="absRev">–</b></span>
+            <span>RPM <b id="absRpm">–</b></span>
+          </div>
+        </div>
+        <div class="card panel" id="panInc">
+          <div class="who">일반 인크리멘탈 엔코더였다면 <small>가상 계산값 (전원을 켠 위치 = 0°)</small></div>
+          <svg class="dial" id="dialInc" viewBox="0 0 200 200" width="180" height="180"></svg>
+          <div class="big" id="incVal">–</div>
+          <div class="verdict" id="incVerdict"></div>
+          <div class="note" id="incNote">전원을 켤 때마다 0°부터 다시 세요</div>
+          <div class="extra"><span>원점 복귀 <b id="incHome">–</b></span></div>
+        </div>
+      </div>
+      <div class="result" id="result"></div>
+    </div>
+
+    <!-- 연결 -->
+    <div class="card">
+      <h2>연결</h2>
+      <div class="row">
+        <button class="primary" id="btnConnect">엔코더 연결</button>
+        <button id="btnDisconnect" disabled>연결 끊기</button>
+      </div>
+      <div class="conn"><span class="dot" id="dot"></span><span id="connText">연결 안 됨</span></div>
+      <ol class="help">
+        <li>샤프트를 아무 각도로 돌려 두세요.</li>
+        <li>전원을 끄세요 — <b>빨간선(5V)</b>을 분리하거나 <b>USB</b>를 뽑으면 돼요.<br>
+            (USB를 다시 꽂으면 자동으로 다시 연결돼요)</li>
+        <li>꺼진 상태에서 샤프트를 다른 각도로 돌리세요.</li>
+        <li>전원을 다시 켜고 두 값을 비교해 보세요.</li>
+      </ol>
+    </div>
+
+    <!-- 설정 -->
+    <div class="card">
+      <h2>설정</h2>
+      <label class="set">전원 OFF 판단 (데이터가 이 시간 이상 끊기면) <b id="vTimeout">0.3초</b></label>
+      <input type="range" id="sTimeout" min="0.1" max="2" step="0.1" value="0.3">
+      <label class="set">제자리 판단 (꺼진 동안 회전량이 이보다 작으면) <b id="vStill">1.0°</b></label>
+      <input type="range" id="sStill" min="0.2" max="5" step="0.1" value="1">
+      <div class="check"><input type="checkbox" id="cVoice" checked><label for="cVoice">음성 안내 켜기</label>
+        <button id="btnTest" style="margin-left:auto">음성 테스트</button></div>
+      <div class="check"><input type="checkbox" id="cSim"><label for="cSim">시뮬레이션 (엔코더 없이 체험)</label></div>
+      <div class="sim" id="simBox">
+        <div class="row">
+          <button class="switch on" id="btnPower">⏻ 전원 ON</button>
+          <span style="font-size:13px;color:var(--muted)">눌러서 가상 엔코더 전원을 끄고 켜요</span>
+        </div>
+        <label class="set">가상 샤프트 각도 (전원이 꺼져 있어도 돌릴 수 있어요) <b id="vSim">90.0°</b></label>
+        <input type="range" id="sSim" min="0" max="359.9" step="0.1" value="90">
+        <div class="check"><input type="checkbox" id="cAuto"><label for="cAuto">자동 시연 (끄기 → 돌리기 → 켜기 반복)</label></div>
+      </div>
+    </div>
+
+    <!-- 기록 -->
+    <div class="card full">
+      <div class="row" style="justify-content:space-between">
+        <h2 style="margin:0">전원 재투입 기록</h2>
+        <div class="row">
+          <button id="btnCsv">📄 기록 CSV</button>
+          <button id="btnClear">지우기</button>
+        </div>
+      </div>
+      <div class="stats">
+        <span>재투입 <b id="stCount">0</b>회</span>
+        <span>회전 후 재투입 <b id="stMoved">0</b>회</span>
+        <span>제자리 재투입 <b id="stStill">0</b>회 · 최대 차이 <b id="stStillMax">–</b></span>
+      </div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr>
+            <th>회차</th><th>꺼진 시각</th><th>꺼져 있던 시간</th><th>OFF 직전 각도</th>
+            <th>ON 직후 각도</th><th>꺼진 동안 회전</th><th>판정</th><th>인크리멘탈(가상)</th>
+          </tr></thead>
+          <tbody id="tbody"></tbody>
+        </table>
+        <div class="empty" id="empty">아직 기록이 없어요. 전원을 껐다 켜면 여기에 쌓여요.</div>
+      </div>
+      <ul class="help" style="margin-top:8px">
+        <li><b>제자리 재투입</b>: 돌리지 않고 껐다 켠 경우예요. 이때의 차이가 작을수록 전원을 켜도 같은 각도를 정확히 기억한다는 뜻이에요.</li>
+        <li>누적 회전수(rev)는 전원을 켜면 0부터 다시 세요. 전원이 꺼져도 유지되는 값은 <b>한 바퀴 안의 절대 각도(0~359.9°)</b>예요.</li>
+      </ul>
+    </div>
+
+    <!-- 소스코드 무료 다운로드 -->
+    <div class="card promo full">
+      <h2>📦 이 예제 소스코드 무료 다운로드</h2>
+      <p>EN25-Absolute만 있으면 지금 보시는 화면을 그대로 실행할 수 있어요.
+         웹페이지는 설치 없이 Chrome·Edge로 열기만 하면 되고, 파이썬 코드는 IDLE에서 F5로 실행됩니다.</p>
+      <div class="row">
+        <button class="primary" id="dlHtml">🌐 웹페이지 (.html)</button>
+        <button class="primary" id="dlPy">🐍 파이썬 코드 (.zip)</button>
+        <a class="product-link" href="https://www.dreamparts.co.kr/goods/goods_view.php?goodsNo=1000000042"
+           target="_blank" rel="noopener">EN25-Absolute 구매하기 ↗</a>
+      </div>
+      <ul>
+        <li>준비물: 앱솔루트 로터리엔코더 EN25-Absolute, USB TO RS232/TTL 컨버터 모듈, PC (모든 준비물은 구매하기에서 구매가능)</li>
+        <li>배선: 빨강 → 5V, 초록 → GND, 흰색(RS232) → USB TO RS232/TTL 컨버터 모듈의 RX · 통신속도 38400bps</li>
+        <li>파이썬: Python 3 설치 후 <code>pip install pyserial</code> → 파일 위쪽의 <code>PORT</code> 값만 맞추고 실행</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- 다운로드용 파이썬 소스 (화면에는 안 보임) -->
+<script type="text/plain" id="srcPython">
+# -*- coding: utf-8 -*-
+"""
+EN25-Absolute 전원을 껐다 켜도 각도를 기억하는지 확인하는 예제
+------------------------------------------------------------------
+- 엔코더 출력: 38400bps, 100Hz,  "$ANG,152.3,11.644,110\r\n"
+                                   (절대각도[deg], 누적회전수[rev], RPM)
+- 엔코더 데이터가 OFF_TIMEOUT 초 이상 끊기면 '전원 OFF' 로 판단하고,
+  끊기기 직전 각도를 기억합니다.
+- 전원이 꺼진 동안 샤프트를 돌린 뒤 다시 켜면,
+  켜자마자 들어온 각도와 꺼지기 직전 각도를 비교해서 보여줍니다.
+- "일반 인크리멘탈 엔코더였다면" 전원을 켠 위치가 0° 가 되므로
+  그 값(가상)도 함께 보여줍니다.
+- 전원을 껐다 켤 때마다 결과를 power_cycle_log.csv 에 저장합니다.
+  (돌리지 않고 껐다 켜면 '자체 시험' 기록으로 쓸 수 있어요)
+
+전원 끄는 방법 (둘 중 편한 것):
+    1) 빨간선(5V)에 스위치를 달거나 커넥터를 뺐다 끼우기
+    2) USB TO RS232/TTL 컨버터의 USB 를 뽑았다 꽂기 (자동으로 다시 연결)
+
+필요 패키지:
+    pip install pyserial
+
+실행 방법:
+    1) IDLE 에서 이 파일을 열고 F5 (Run Module)  ← 아래 PORT 값만 맞추면 됨
+    2) 명령창:  python power_cycle_demo.py --port COM5
+"""
+
+import argparse
+import csv
+import os
+import sys
+import time
+
+import serial
+import serial.tools.list_ports
+
+# ======== 여기만 바꾸세요 ========
+PORT = "COM5"          # 엔코더가 연결된 포트 (장치관리자 > 포트(COM & LPT) 에서 확인)
+OFF_TIMEOUT = 0.3      # 데이터가 이 시간(초) 이상 끊기면 '전원 OFF' 로 판단
+STILL_LIMIT = 1.0      # 꺼진 동안 회전량이 이 각도 미만이면 '제자리(돌리지 않음)' 로 봄
+# ================================
+
+BAUDRATE = 38400
+ON_SAMPLES = 5         # 전원을 켠 직후 각도: 처음 5개(약 0.05초) 평균
+OFF_SAMPLES = 10       # 꺼지기 직전 각도: 마지막 10개(약 0.1초) 평균
+IN_IDLE = "idlelib" in sys.modules  # IDLE 은 \r 한 줄 갱신을 지원하지 않음
+LOG_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "power_cycle_log.csv")
+
+
+# ---------------- 엔코더 읽기 ----------------
+def parse_line(line):
+    """'$ANG,152.3,11.644,110' -> (152.3, 11.644, 110.0), 실패 시 None"""
+    if not line.startswith("$ANG"):
+        return None
+    parts = line.split(",")
+    if len(parts) < 4:
+        return None
+    try:
+        return float(parts[1]), float(parts[2]), float(parts[3])
+    except ValueError:
+        return None
+
+
+def angle_diff(a, b):
+    """a-b 를 -180~+180 범위로 (359.9° -> 0° 넘어갈 때 대비)"""
+    return (a - b + 180.0) % 360.0 - 180.0
+
+
+def average_angle(values):
+    """0/360 경계 근처에서도 올바르게 평균내기 위해 첫 값 기준 차이로 평균"""
+    ref = values[0]
+    avg = ref + sum(angle_diff(v, ref) for v in values) / len(values)
+    return avg % 360.0
+
+
+def fmt(deg):
+    """359.97 -> '0.0', -0.04 -> '0.0'"""
+    v = round(deg, 1) % 360.0
+    return f"{0.0 if abs(v) < 0.05 else v:.1f}"
+
+
+# ---------------- 전원 OFF/ON 판단 ----------------
+class PowerCycleTracker:
+    """엔코더 각도가 들어올 때마다 feed(), 주기적으로 tick() 을 부른다.
+    두 함수 모두 일어난 일을 (종류, 내용) 목록으로 돌려준다."""
+
+    def __init__(self, off_timeout=OFF_TIMEOUT):
+        self.off_timeout = off_timeout
+        self.powered = None          # None: 아직 데이터 없음, True: ON, False: OFF
+        self.last_data_at = 0.0
+        self.recent = []             # 최근 각도 (꺼지기 직전 각도 계산용)
+        self.on_buf = []             # 켜진 직후 각도 모으는 곳
+        self.off_angle = None        # 꺼지기 직전 각도
+        self.off_at = 0.0
+        self.cycle = 0
+        self.inc_total = 0.0         # 가상 인크리멘탈: 전원을 켠 뒤 돌아간 양 (누적)
+        self.inc_last = None
+        self.deg = None
+        self.rev = 0.0
+
+    @property
+    def incremental(self):
+        """가상 인크리멘탈 엔코더 값 (켠 위치 = 0°, 0~359.9° 로 환산)"""
+        return self.inc_total % 360.0
+
+    def feed(self, deg, rev, now):
+        events = []
+        self.last_data_at = now
+        self.deg, self.rev = deg, rev
+
+        if self.powered is None:                     # 프로그램 시작 후 첫 데이터
+            self.powered = True
+            self._reset_incremental(deg)
+            events.append(("start", deg))
+        elif self.powered is False:                  # 꺼져 있다가 데이터가 다시 들어옴
+            self.on_buf.append(deg)
+            if len(self.on_buf) < ON_SAMPLES:
+                return events
+            on_angle = average_angle(self.on_buf)
+            self.on_buf = []
+            self.powered = True
+            self.cycle += 1
+            self._reset_incremental(on_angle)
+            events.append(("on", {
+                "cycle": self.cycle,
+                "off_at": self.off_at,
+                "on_at": now,
+                "off_sec": now - self.off_at,
+                "off_angle": self.off_angle,
+                "on_angle": on_angle,
+                "rotated": angle_diff(on_angle, self.off_angle),
+                "rev": rev,
+            }))
+
+        # 가상 인크리멘탈: 켠 뒤로 돌아간 양을 계속 더함
+        self.inc_total += angle_diff(deg, self.inc_last)
+        self.inc_last = deg
+
+        self.recent.append(deg)
+        if len(self.recent) > OFF_SAMPLES:
+            self.recent.pop(0)
+        return events
+
+    def tick(self, now):
+        if self.powered and now - self.last_data_at > self.off_timeout:
+            self.powered = False
+            self.off_angle = average_angle(self.recent)
+            self.off_at = self.last_data_at
+            self.recent = []
+            self.on_buf = []
+            return [("off", self.off_angle)]
+        return []
+
+    def _reset_incremental(self, deg):
+        self.inc_total = 0.0
+        self.inc_last = deg
+
+
+# ---------------- CSV 기록 ----------------
+CSV_HEADER = ["회차", "전원 OFF 시각", "전원 ON 시각", "꺼져 있던 시간(초)",
+              "OFF 직전 각도(°)", "ON 직후 각도(°)", "꺼진 동안 회전(°)",
+              "판정", "인크리멘탈(가상) ON 값(°)"]
+
+
+def save_csv(r):
+    new = not os.path.exists(LOG_CSV)
+    stamp = lambda t: time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t))
+    judge = "제자리" if abs(r["rotated"]) < STILL_LIMIT else "회전함"
+    try:
+        # utf-8-sig: 엑셀에서 열어도 한글이 깨지지 않음
+        with open(LOG_CSV, "a", newline="", encoding="utf-8-sig" if new else "utf-8") as f:
+            w = csv.writer(f)
+            if new:
+                w.writerow(CSV_HEADER)
+            w.writerow([r["cycle"], stamp(r["off_at"]), stamp(r["on_at"]), f"{r['off_sec']:.1f}",
+                        fmt(r["off_angle"]), fmt(r["on_angle"]), f"{r['rotated']:+.1f}",
+                        judge, "0.0"])
+    except PermissionError:
+        print(f"   (CSV 저장 실패: {os.path.basename(LOG_CSV)} 파일이 엑셀에 열려 있으면 닫아주세요)")
+
+
+# ---------------- 화면 출력 ----------------
+def show_result(r, still):
+    print("\n")
+    print("=" * 58)
+    print(f" [{r['cycle']}회차] 전원 ON!  ({r['off_sec']:.1f}초 동안 꺼져 있었어요)")
+    print("-" * 58)
+    print(f"  꺼지기 직전 각도        : {fmt(r['off_angle']):>6}°")
+    print(f"  ○ EN25-Absolute (실제)  : {fmt(r['on_angle']):>6}°   ← 켜자마자 현재 각도")
+    print(f"  ✕ 인크리멘탈 (가상)     : {'0.0':>6}°   ← 0 부터 다시 셈 (원점 복귀 필요)")
+    print("-" * 58)
+    if abs(r["rotated"]) < STILL_LIMIT:
+        print(f"  돌리지 않고 껐다 켬 → 차이 {r['rotated']:+.1f}°  (같은 각도 유지)")
+    else:
+        print(f"  꺼진 동안 {r['rotated']:+.1f}° 돌아간 것까지 알아냈어요!")
+    print(f"  누적 회전수는 전원을 켤 때 초기화돼요 (지금 {r['rev']:.3f} rev)")
+    if still:
+        diffs = [abs(d) for d in still]
+        print(f"  [자체 시험] 제자리 재투입 {len(still)}회, 최대 차이 {max(diffs):.1f}°")
+    print("=" * 58)
+    print(f"  기록 저장: {os.path.basename(LOG_CSV)}\n")
+
+
+def show_live(tr):
+    text = (f"전원 ON  EN25 각도 {fmt(tr.deg):>6}°  |  "
+            f"인크리멘탈(가상) {fmt(tr.incremental):>6}°  |  누적 {tr.rev:9.3f} rev")
+    if IN_IDLE:
+        print(text)
+    else:
+        print("\r" + text + "   ", end="", flush=True)
+
+
+# ---------------- 메인 ----------------
+def open_port(name):
+    # timeout 을 짧게: 데이터가 끊긴 것을 0.3초 안에 알아채야 하므로
+    return serial.Serial(name, BAUDRATE, timeout=0.05)
+
+
+def main():
+    p = argparse.ArgumentParser(description="EN25-Absolute 전원 OFF→ON 각도 유지 확인")
+    p.add_argument("--port", default=PORT, help="시리얼 포트 (예: COM5)")
+    p.add_argument("--timeout", type=float, default=OFF_TIMEOUT,
+                   help="데이터가 이 시간(초) 이상 끊기면 전원 OFF 로 판단")
+    args = p.parse_args()
+
+    try:
+        ser = open_port(args.port)
+    except serial.SerialException as e:
+        print(f"{args.port} 포트를 열 수 없어요: {e}\n")
+        print("사용 가능한 포트:")
+        for port in serial.tools.list_ports.comports():
+            print(f"  {port.device}  -  {port.description}")
+        print("\n파일 위쪽의 PORT 값을 엔코더 포트로 바꿔주세요.")
+        print("(다른 프로그램이 이 포트를 쓰고 있으면 먼저 닫아주세요.)")
+        return
+
+    print("EN25-Absolute 전원 OFF→ON 각도 유지 확인 (종료: Ctrl+C)")
+    print("1) 샤프트를 아무 각도로 돌려 두고   2) 전원을 끈 뒤 다른 각도로 돌리고   3) 다시 켜보세요.")
+    print("   전원 끄기: 빨간선(5V) 분리 또는 USB 뽑기\n")
+
+    tr = PowerCycleTracker(args.timeout)
+    still = []                       # 제자리 재투입 때의 차이 (자체 시험)
+    buf = b""
+    last_print = 0.0
+    start = time.time()
+    warned = False
+
+    while True:
+        # ---- 데이터 읽기 (USB 가 빠지면 다시 꽂힐 때까지 기다림) ----
+        try:
+            chunk = ser.read(ser.in_waiting or 1)
+        except serial.SerialException:
+            ser.close()
+            for kind, val in tr.tick(time.time() + 999):    # USB 분리 = 바로 전원 OFF
+                print(f"\n\n🔌 USB 연결이 끊어졌어요 → 전원 OFF 로 처리 (마지막 각도 {fmt(val)}°)")
+            print("   USB 를 다시 꽂으면 자동으로 이어서 측정해요...")
+            while True:
+                time.sleep(0.5)
+                try:
+                    ser = open_port(args.port)
+                    buf = b""
+                    print("   USB 다시 연결됨!")
+                    break
+                except serial.SerialException:
+                    pass
+            continue
+
+        buf += chunk
+        now = time.time()
+        while b"\n" in buf:          # 한 줄씩 잘라서 처리
+            line, buf = buf.split(b"\n", 1)
+            data = parse_line(line.decode("ascii", errors="ignore").strip())
+            if not data:
+                continue
+            for kind, val in tr.feed(data[0], data[1], now):
+                if kind == "start":
+                    print(f"측정 시작: 현재 각도 {fmt(val)}°\n")
+                elif kind == "on":
+                    if abs(val["rotated"]) < STILL_LIMIT:
+                        still.append(val["rotated"])
+                    show_result(val, still)
+                    save_csv(val)
+
+        # ---- 전원 OFF 판단 ----
+        for kind, val in tr.tick(now):
+            print(f"\n\n⏻ 전원 OFF 감지!  꺼지기 직전 각도 {fmt(val)}°")
+            print("   지금 샤프트를 다른 각도로 돌린 뒤 전원을 다시 켜보세요...")
+
+        if tr.powered is None and not warned and now - start > 3:
+            warned = True
+            print("⚠ 3초 동안 엔코더 데이터($ANG,...)가 들어오지 않았어요.")
+            print("   - 전원(빨강 5V/초록 GND) 또는 흰색(RS232) 선이")
+            print("     USB TO RS232/TTL 컨버터 RX 에 연결됐는지 확인하세요.")
+            print("   - 다른 프로그램이 이 포트를 쓰고 있으면 닫아주세요.\n")
+
+        # ---- 현재 값 표시 (명령창: 0.2초마다 한 줄 갱신 / IDLE: 1초마다 새 줄) ----
+        interval = 1.0 if IN_IDLE else 0.2
+        if tr.powered and now - last_print >= interval:
+            last_print = now
+            show_live(tr)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n종료합니다.")
+</script>
+
+<script>
+// 웹페이지 다운로드용: 화면이 바뀌기 전의 원본 HTML 을 먼저 저장해 둠
+const PAGE_SOURCE = "<!doctype html>\n" + document.documentElement.outerHTML;
+
+// ---------------- 설정값 ----------------
+const BAUDRATE = 38400;
+const PAGE_TITLE = document.title;
+const ON_SAMPLES = 5;                  // 켜진 직후 각도: 처음 5개(약 0.05초) 평균
+const OFF_SAMPLES = 10;                // 꺼지기 직전 각도: 마지막 10개(약 0.1초) 평균
+const $ = id => document.getElementById(id);
+const settings = { timeout: 0.3, still: 1.0, voice: true };
+
+// ---------------- 상태 ----------------
+let port = null, reader = null, keepReading = false;
+let readClosed = null;                 // 포트 → 글자 변환 연결(pipeTo)이 끝나면 완료되는 Promise
+let usbLost = false;                   // USB 가 빠져서 다시 꽂히기를 기다리는 중
+let powered = null;                    // null: 데이터 없음, true: ON, false: OFF
+let lastDataAt = 0;
+let recent = [];                       // 최근 각도 (꺼지기 직전 각도 계산용)
+let onBuf = [];                        // 켜진 직후 각도 모으는 곳
+let offAngle = null, offAt = 0;
+let incTotal = 0, incLast = null;      // 가상 인크리멘탈: 켠 뒤로 돌아간 양 (누적)
+let cur = { deg: null, rev: 0, rpm: 0 };
+let cycles = [];                       // 재투입 기록
+let lastResult = null;                 // 화면에 보여줄 마지막 재투입 결과
+
+// ---------------- 각도 계산 ----------------
+const angleDiff = (a, b) => ((a - b + 180) % 360 + 360) % 360 - 180;   // a-b 를 -180~+180 범위로
+const norm = v => ((v % 360) + 360) % 360;
+// 소수 첫째 자리 각도 표시 (359.97° → "0.0°", -0.0° → "0.0°")
+const fmtDeg = v => { let r = norm(Math.round(v * 10) / 10); if (r >= 359.95 || r < 0.05) r = 0; return r.toFixed(1) + "°"; };
+// 인크리멘탈(가상): 켠 위치 기준 +/- 값 (엔코더 떨림 ±0.2° 는 0.0° 로)
+const fmtInc = v => { const w = angleDiff(v, 0); return Math.abs(w) < 0.25 ? "0.0°" : (w > 0 ? "+" : "") + w.toFixed(1) + "°"; };
+const fmtSigned = v => (Math.abs(v) < 0.05 ? "±0.0" : (v > 0 ? "+" : "") + v.toFixed(1)) + "°";
+function averageAngle(values) {
+  const ref = values[0];
+  return norm(ref + values.reduce((s, v) => s + angleDiff(v, ref), 0) / values.length);
+}
+
+// "$ANG,152.3,11.644,110" → {deg, rev, rpm}
+function parseLine(line) {
+  if (!line.startsWith("$ANG")) return null;
+  const p = line.split(",");
+  if (p.length < 4) return null;
+  const deg = parseFloat(p[1]), rev = parseFloat(p[2]), rpm = parseFloat(p[3]);
+  return isNaN(deg) ? null : { deg, rev, rpm };
+}
+
+// ---------------- 음성 ----------------
+let koVoice = null;
+function pickVoice() {
+  const vs = speechSynthesis.getVoices();
+  koVoice = vs.find(v => v.lang === "ko-KR" && /heami|google/i.test(v.name))
+         || vs.find(v => v.lang && v.lang.startsWith("ko")) || null;
+}
+if ("speechSynthesis" in window) {
+  pickVoice();
+  speechSynthesis.onvoiceschanged = pickVoice;
+}
+// 냉장고 예제와 같은 방식: 말하는 중일 때만 cancel 후 잠깐 기다렸다 speak, 문장 객체를 붙잡아 둠
+let currentUtter = null;
+function speak(text) {
+  if (!settings.voice || !("speechSynthesis" in window)) return;
+  const synth = speechSynthesis, busy = synth.speaking || synth.pending;
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "ko-KR";
+  if (koVoice) u.voice = koVoice;
+  u.onend = u.onerror = () => { if (currentUtter === u) currentUtter = null; };
+  currentUtter = u;
+  if (busy) synth.cancel();
+  setTimeout(() => { if (currentUtter !== u) return; synth.resume(); synth.speak(u); }, busy ? 150 : 0);
+}
+// 음성용 각도 읽기: 180.0 → "180도", 92.4 → "92.4도"
+const sayDeg = v => { const r = Math.round(Math.abs(v) * 10) / 10; return (r % 1 ? r.toFixed(1) : r.toFixed(0)) + "도"; };
+
+// ---------------- 핵심: 각도 한 개가 들어올 때마다 ----------------
+function onSample(d) {
+  const t = Date.now();
+  lastDataAt = t;
+  cur = d;
+
+  if (powered === null) {                              // 연결 후 첫 데이터
+    powered = true;
+    resetIncremental(d.deg);
+    lastResult = null;
+    setPower("on", `측정 시작! 지금 각도는 <b>${fmtDeg(d.deg)}</b> 이에요. 이제 전원을 꺼보세요.`);
+  } else if (powered === false) {                      // 꺼져 있다가 데이터가 다시 들어옴
+    onBuf.push(d.deg);
+    if (onBuf.length < ON_SAMPLES) return;
+    const onAngle = averageAngle(onBuf);
+    onBuf = [];
+    powered = true;
+    resetIncremental(onAngle);
+    powerOn(t, onAngle, d.rev);
+  }
+
+  incTotal += angleDiff(d.deg, incLast);               // 가상 인크리멘탈: 켠 뒤로 돌아간 양
+  incLast = d.deg;
+  recent.push(d.deg);
+  if (recent.length > OFF_SAMPLES) recent.shift();
+  render();
+}
+
+function resetIncremental(deg) { incTotal = 0; incLast = deg; }
+
+// 데이터 끊김 감시 → 전원 OFF 판단 (0.05초마다)
+setInterval(() => {
+  if (powered && Date.now() - lastDataAt > settings.timeout * 1000) powerOff();
+}, 50);
+
+function powerOff() {
+  powered = false;
+  offAngle = averageAngle(recent);
+  offAt = lastDataAt;
+  recent = []; onBuf = [];
+  lastResult = null;
+  setPower("off", `꺼지기 직전 각도 <b>${fmtDeg(offAngle)}</b> — 지금 샤프트를 다른 각도로 돌린 뒤 전원을 다시 켜보세요.`);
+  speak("전원이 꺼졌어요");
+  render();
+}
+
+function powerOn(t, onAngle, rev) {
+  const rotated = angleDiff(onAngle, offAngle);
+  const still = Math.abs(rotated) < settings.still;
+  const r = { n: cycles.length + 1, offAt, onAt: t, offSec: (t - offAt) / 1000, offAngle, onAngle, rotated, still, rev };
+  cycles.push(r);
+  lastResult = r;
+  addRow(r);
+  setPower("on", `전원 ON — <b>${r.offSec.toFixed(1)}초</b> 동안 꺼져 있었어요.`);
+  speak(still
+    ? `전원이 켜졌어요. 꺼지기 전과 같은 ${sayDeg(onAngle)}를 기억하고 있어요`
+    : `전원이 켜졌어요. 현재 각도 ${sayDeg(onAngle)}. 꺼진 동안 ${sayDeg(rotated)} 돌아간 것까지 알아요`);
+}
+
+// ---------------- 화면 ----------------
+function setPower(kind, html) {
+  $("powerCard").className = "card power full " + (kind === "on" ? "on" : kind === "off" ? "off" : "");
+  $("pwBadge").textContent = { on: "⏻ 전원 ON", off: "⏻ 전원 OFF", idle: "연결 대기", usb: "🔌 USB 분리됨", nodata: "⚠ 데이터 없음" }[kind];
+  $("pwMsg").innerHTML = html;                         // html 에는 우리가 만든 숫자만 들어감
+}
+
+// 화면 갱신은 초당 약 30번으로 제한 (탭이 뒤에 있어도 멈추지 않도록 타이머 사용)
+let renderTimer = null;
+function render() {
+  if (renderTimer) return;
+  renderTimer = setTimeout(() => {
+    renderTimer = null;
+    const on = powered === true, off = powered === false;
+    const absP = $("panAbs"), incP = $("panInc");
+    if (cur.deg === null) return;
+
+    // 앱솔루트
+    if (on) {
+      $("absVal").textContent = fmtDeg(cur.deg);
+      $("absRev").textContent = cur.rev.toFixed(3);
+      $("absRpm").textContent = Math.round(cur.rpm);
+      needle("dialAbs", cur.deg, true);
+    } else {
+      $("absVal").textContent = "OFF";
+      $("absRev").textContent = $("absRpm").textContent = "–";
+      needle("dialAbs", offAngle, false);
+    }
+    // 인크리멘탈(가상)
+    if (on) {
+      $("incVal").textContent = fmtInc(incTotal);
+      needle("dialInc", incTotal, true);
+    } else {
+      $("incVal").textContent = "OFF";
+      needle("dialInc", 0, false);
+    }
+
+    const r = lastResult;
+    absP.className = "card panel" + (off ? " dim" : r ? " good" : "");
+    incP.className = "card panel" + (off ? " dim" : r && !r.still ? " bad" : "");
+    if (off) {
+      $("absVerdict").textContent = $("incVerdict").textContent = "";
+      $("absNote").textContent = `꺼지기 직전 ${fmtDeg(offAngle)} — 다시 켜면 현재 각도를 바로 알려줘요`;
+      $("incNote").textContent = "꺼진 동안 돌아간 양은 셀 수 없어요";
+      $("incHome").textContent = "–";
+    } else if (r) {
+      $("absVerdict").textContent = "○ 켜자마자 현재 각도";
+      $("absNote").textContent = r.still
+        ? `꺼지기 전(${fmtDeg(r.offAngle)})과 같은 각도를 기억해요 (차이 ${fmtSigned(r.rotated)})`
+        : `꺼진 동안 ${fmtSigned(r.rotated)} 돌아간 것까지 알아요`;
+      $("incVerdict").textContent = r.still ? "△ 켠 위치를 0°로 셈" : "✕ 0°부터 다시 셈";
+      $("incNote").textContent = r.still
+        ? "제자리라 0°지만, 원래 각도(" + fmtDeg(r.onAngle) + ")는 몰라요"
+        : `실제 각도는 ${fmtDeg(r.onAngle)}인데 0°로 시작 → 기준이 틀어짐`;
+      $("incHome").textContent = "필요";
+    } else {
+      $("absVerdict").textContent = $("incVerdict").textContent = "";
+      $("absNote").textContent = "전원이 켜지는 순간 현재 각도가 바로 나와요";
+      $("incNote").textContent = "연결(전원을 켠) 위치를 0°로 세기 시작했어요";
+      $("incHome").textContent = "필요";
+    }
+
+    // 결과 요약
+    const box = $("result");
+    if (r && on) {
+      box.style.display = "block";
+      box.innerHTML = `<b>${r.n}회차</b> · 꺼지기 직전 <b>${fmtDeg(r.offAngle)}</b> → 켜자마자 EN25 <b style="color:var(--good)">${fmtDeg(r.onAngle)}</b>`
+        + ` / 인크리멘탈(가상) <b style="color:var(--bad)">0.0°</b>`
+        + `<br>${r.still ? "돌리지 않고 껐다 켰어요 — 같은 각도를 유지했어요." : `꺼진 동안 <b>${fmtSigned(r.rotated)}</b> 돌렸어요 — 앱솔루트는 원점 복귀 없이 바로 알아요.`}`;
+    } else box.style.display = "none";
+  }, 33);
+}
+
+// ---------------- 다이얼 (0° = 위쪽, 시계 방향 +) ----------------
+function buildDial(id) {
+  let s = `<circle cx="100" cy="100" r="86" fill="none" stroke="var(--line)" stroke-width="10"/>`;
+  for (let a = 0; a < 360; a += 15) {
+    const major = a % 90 === 0;
+    s += `<line x1="100" y1="${major ? 8 : 12}" x2="100" y2="${major ? 26 : 20}" stroke="var(--muted)" stroke-width="${major ? 2.5 : 1}" transform="rotate(${a} 100 100)"/>`;
+  }
+  [["0°", 100, 44], ["90°", 160, 104], ["180°", 100, 164], ["270°", 40, 104]].forEach(([t, x, y]) =>
+    s += `<text x="${x}" y="${y}" text-anchor="middle" font-size="12" fill="var(--muted)">${t}</text>`);
+  s += `<line class="nd" x1="100" y1="100" x2="100" y2="22" stroke="var(--text)" stroke-width="4" stroke-linecap="round"/>`;
+  s += `<circle cx="100" cy="100" r="7" fill="var(--text)"/>`;
+  $(id).innerHTML = s;
+}
+function needle(id, deg, on) {
+  const n = $(id).querySelector(".nd");
+  n.setAttribute("transform", `rotate(${norm(deg ?? 0)} 100 100)`);
+  n.setAttribute("stroke-dasharray", on ? "" : "5 5");
+  n.setAttribute("opacity", on ? 1 : .45);
+}
+buildDial("dialAbs"); buildDial("dialInc");
+
+// ---------------- 기록 표 / CSV ----------------
+const pad = n => String(n).padStart(2, "0");
+const hms = t => { const d = new Date(t); return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; };
+function stamp(t) { const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hms(t)}`; }
+
+function addRow(r) {
+  const tr = document.createElement("tr");
+  const cells = [r.n, hms(r.offAt), r.offSec.toFixed(1) + "초", fmtDeg(r.offAngle), fmtDeg(r.onAngle), fmtSigned(r.rotated)];
+  cells.forEach(v => { const td = document.createElement("td"); td.className = "num"; td.textContent = v; tr.append(td); });
+  const tdJ = document.createElement("td");
+  tdJ.innerHTML = r.still ? '<span class="tag still">제자리</span>' : '<span class="tag moved">회전함</span>';
+  const tdI = document.createElement("td"); tdI.className = "num"; tdI.textContent = "0.0°";
+  tr.append(tdJ, tdI);
+  $("tbody").prepend(tr);
+  $("empty").style.display = "none";
+  updateStats();
+}
+function updateStats() {
+  const still = cycles.filter(c => c.still);
+  $("stCount").textContent = cycles.length;
+  $("stMoved").textContent = cycles.length - still.length;
+  $("stStill").textContent = still.length;
+  $("stStillMax").textContent = still.length ? "±" + Math.max(...still.map(c => Math.abs(c.rotated))).toFixed(1) + "°" : "–";
+}
+
+// 파일 내려받기 (엑셀에서 한글이 깨지지 않도록 BOM 추가)
+function download(name, text, type = "text/csv;charset=utf-8") {
+  const a = document.createElement("a");
+  const blob = text instanceof Blob ? text : new Blob([type.startsWith("text/csv") ? "﻿" + text : text], { type });
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+const fileDate = () => stamp(Date.now()).replace(/[-: ]/g, "").slice(0, 12);   // 202610071530
+$("btnCsv").onclick = () => {
+  if (!cycles.length) return alert("아직 기록이 없어요.");
+  const rows = [["회차", "전원 OFF 시각", "전원 ON 시각", "꺼져 있던 시간(초)", "OFF 직전 각도(°)", "ON 직후 각도(°)", "꺼진 동안 회전(°)", "판정", "인크리멘탈(가상) ON 값(°)"],
+    ...cycles.map(c => [c.n, stamp(c.offAt), stamp(c.onAt), c.offSec.toFixed(1), fmtDeg(c.offAngle).slice(0, -1),
+                        fmtDeg(c.onAngle).slice(0, -1), c.rotated.toFixed(1), c.still ? "제자리" : "회전함", "0.0"])];
+  download(`전원재투입_기록_${fileDate()}.csv`, rows.map(r => r.join(",")).join("\r\n"));
+};
+$("btnClear").onclick = () => {
+  cycles = []; lastResult = null;
+  $("tbody").innerHTML = ""; $("empty").style.display = "block";
+  updateStats(); render();
+};
+
+// ---------------- 소스코드 다운로드 ----------------
+$("dlHtml").onclick = () => download("power_cycle_demo_web.html", PAGE_SOURCE, "text/html;charset=utf-8");
+// 파이썬 코드는 ZIP 으로 묶어서 받기 (.py 를 그대로 받으면 브라우저가 "장치를 손상시킬 수 있습니다" 경고를 띄움)
+const README = `EN25-Absolute 전원 OFF→ON 각도 유지 확인 - 파이썬 예제 (드림솔루션)
+
+[준비물]
+- 앱솔루트 로터리엔코더 EN25-Absolute
+- USB TO RS232/TTL 컨버터 모듈
+- PC
+  (모든 준비물은 아래 상품 정보 링크주소에서 구매가능)
+- 배선: 빨강 → 5V, 초록 → GND, 흰색(RS232) → USB TO RS232/TTL 컨버터 모듈의 RX  (통신속도 38400bps)
+
+[실행 방법]
+1. Python 3 를 설치합니다.  https://www.python.org
+2. 명령 프롬프트에서 필요한 패키지를 설치합니다.
+       pip install pyserial
+3. power_cycle_demo.py 를 IDLE 로 열고, 파일 위쪽의 PORT 값을
+   엔코더가 연결된 포트(예: "COM5")로 바꿉니다.
+   (장치 관리자 > 포트(COM & LPT) 에서 확인)
+4. F5 (Run Module) 를 누릅니다.
+5. 전원을 끄고(빨간선 분리 또는 USB 뽑기), 샤프트를 돌린 뒤, 다시 켜보세요.
+   켜자마자 현재 각도와 꺼진 동안 돌아간 양이 표시되고,
+   결과가 power_cycle_log.csv 에 저장됩니다.
+
+[상품 정보]
+https://www.dreamparts.co.kr/goods/goods_view.php?goodsNo=1000000042
+`;
+// 압축하지 않고 묶기만 하는 간단한 ZIP 만들기 (외부 라이브러리 없이)
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
+  return t;
+})();
+const crc32 = b => { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = CRC_TABLE[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+function makeZip(files) {                              // files: [{ name, text }]
+  const enc = new TextEncoder(), parts = [], central = [];
+  const d = new Date();
+  const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+  const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name), data = enc.encode(f.text), crc = crc32(data);
+    const lh = new DataView(new ArrayBuffer(30));      // 파일 머리말
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true);
+    lh.setUint16(10, time, true); lh.setUint16(12, date, true); lh.setUint32(14, crc, true);
+    lh.setUint32(18, data.length, true); lh.setUint32(22, data.length, true); lh.setUint16(26, name.length, true);
+    parts.push(lh, name, data);
+    const ch = new DataView(new ArrayBuffer(46));      // 목록 항목
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true);
+    ch.setUint16(12, time, true); ch.setUint16(14, date, true); ch.setUint32(16, crc, true);
+    ch.setUint32(20, data.length, true); ch.setUint32(24, data.length, true); ch.setUint16(28, name.length, true);
+    ch.setUint32(42, offset, true);
+    central.push(ch, name);
+    offset += 30 + name.length + data.length;
+  }
+  const cdSize = central.reduce((n, p) => n + p.byteLength, 0);
+  const end = new DataView(new ArrayBuffer(22));       // 끝 표시
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
+  end.setUint32(12, cdSize, true); end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, end], { type: "application/zip" });
+}
+$("dlPy").onclick = () => download("power_cycle_demo_python.zip", makeZip([
+  { name: "power_cycle_demo.py", text: $("srcPython").textContent.replace(/^\n/, "") },
+  { name: "README.txt", text: "﻿" + README },
+]));
+
+// ---------------- 시리얼 연결 ----------------
+async function connect() {
+  try {
+    port = await navigator.serial.requestPort();      // 포트 선택 창
+    await port.open({ baudRate: BAUDRATE });
+  } catch (e) {
+    port = null;
+    if (e.name !== "NotFoundError") alert("포트를 열 수 없어요.\n다른 프로그램(IDLE 등)이 COM 포트를 쓰고 있으면 먼저 닫아주세요.\n\n" + e.message);
+    return;
+  }
+  stopSim();
+  onConnected();
+}
+
+function onConnected() {
+  const info = port.getInfo();
+  $("connText").textContent = `연결됨 (USB ${info.usbVendorId?.toString(16) ?? "?"}:${info.usbProductId?.toString(16) ?? "?"}, ${BAUDRATE}bps)`;
+  $("dot").className = "dot on";
+  $("btnConnect").disabled = true; $("btnDisconnect").disabled = false;
+  if (!usbLost) { powered = null; cur = { deg: null, rev: 0, rpm: 0 }; setPower("idle", "엔코더 데이터를 기다리는 중..."); }
+  usbLost = false;
+  lastDataAt = Date.now();
+  readLoop();
+}
+
+async function readLoop() {
+  keepReading = true;
+  const decoder = new TextDecoderStream();
+  readClosed = port.readable.pipeTo(decoder.writable).catch(() => {});
+  reader = decoder.readable.getReader();
+  let buf = "";
+  try {
+    while (keepReading) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += value;
+      let idx;
+      while ((idx = buf.indexOf("\n")) >= 0) {       // 한 줄씩 잘라서 처리
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        const d = parseLine(line);
+        if (d) onSample(d);
+      }
+    }
+  } catch (e) {
+    // USB 가 빠지면 여기로 옴
+  } finally {
+    reader.releaseLock();
+    await readClosed;
+    if (keepReading) {                               // '연결 끊기' 버튼이 아닌데 끝남 = USB 분리
+      try { await port.close(); } catch {}
+      usbLost = true;
+      if (powered) powerOff();                       // USB 분리 = 엔코더 전원 OFF
+      setPower("usb", "USB가 빠졌어요 = 전원 OFF. 샤프트를 돌린 뒤 <b>USB를 다시 꽂으면</b> 자동으로 이어서 측정해요.");
+      $("dot").className = "dot wait";
+      $("connText").textContent = "USB 다시 연결 기다리는 중...";
+    }
+  }
+}
+
+// 허락받았던 USB 장치가 다시 꽂히면 자동으로 다시 연결
+if ("serial" in navigator) {
+  navigator.serial.addEventListener("connect", async e => {
+    if (!usbLost) return;
+    port = e.target;
+    try { await port.open({ baudRate: BAUDRATE }); onConnected(); }
+    catch (err) { $("connText").textContent = "다시 연결 실패: " + err.message + " — ‘엔코더 연결’을 눌러주세요."; $("btnConnect").disabled = false; }
+  });
+}
+
+async function disconnect() {
+  keepReading = false; usbLost = false;
+  try { await reader?.cancel(); } catch {}
+  // 포트를 읽고 있던 연결(pipeTo)이 완전히 풀린 뒤에 닫아야 함
+  try { await readClosed; } catch {}
+  try { await port?.close(); } catch {}
+  port = null; powered = null;
+  $("dot").className = "dot";
+  $("connText").textContent = "연결 안 됨";
+  $("btnConnect").disabled = false; $("btnDisconnect").disabled = true;
+  setPower("idle", "‘엔코더 연결’ 버튼을 눌러 COM 포트를 선택하세요.");
+}
+
+// 연결됐는데 데이터가 안 들어올 때 안내 (3초)
+setInterval(() => {
+  if (port && !usbLost && powered === null && Date.now() - lastDataAt > 3000)
+    setPower("nodata", "엔코더에서 $ANG 데이터가 들어오지 않아요. 전원(빨강 5V / 초록 GND)과 흰색(RS232)선 → 컨버터 RX 연결을 확인하세요.");
+}, 1000);
+
+// ---------------- 시뮬레이션 ----------------
+let simTimer = null, simOn = true, simRev = 0, simLast = null;
+function setSim(on) {
+  $("simBox").style.display = on ? "block" : "none";
+  clearInterval(simTimer); simTimer = null;
+  document.title = on ? "[시뮬레이션] " + PAGE_TITLE : PAGE_TITLE;
+  if (on) {
+    if (port) disconnect();
+    powered = null; cur = { deg: null, rev: 0, rpm: 0 };
+    setSimPower(true);
+    simTimer = setInterval(simTick, 10);              // 엔코더처럼 100Hz
+  } else {
+    setAuto(false);
+    powered = null;
+    setPower("idle", "‘엔코더 연결’ 버튼을 눌러 COM 포트를 선택하세요.");
+  }
+  updateDemoButton();
+}
+function stopSim() { if (simTimer) { $("cSim").checked = false; setSim(false); } }
+function simTick() {
+  if (autoOn) {                                       // 자동 시연: 전원과 샤프트를 저절로 움직임
+    const { power, angle } = autoStep(Date.now() - autoStart);
+    if (power !== simOn) setSimPower(power);
+    $("sSim").value = angle; $("vSim").textContent = angle.toFixed(1) + "°";
+  }
+  const deg = parseFloat($("sSim").value);
+  if (simLast !== null) simRev += angleDiff(deg, simLast) / 360;   // 전원이 꺼져 있어도 샤프트는 돌아감
+  simLast = deg;
+  if (!simOn) return;                                 // 전원 OFF = 데이터가 안 나옴
+  const noise = (Math.random() - 0.5) * 0.2;
+  onSample({ deg: norm(deg + noise), rev: simRev, rpm: 0 });
+}
+function setSimPower(on) {
+  simOn = on;
+  if (on) simRev = 0;                                 // 실제 EN25 처럼 켤 때 누적 회전수 0
+  const b = $("btnPower");
+  b.className = "switch " + (on ? "on" : "off");
+  b.textContent = on ? "⏻ 전원 ON" : "⏻ 전원 OFF";
+}
+$("btnPower").onclick = () => { if (autoOn) setAuto(false); setSimPower(!simOn); };
+
+// 자동 시연 (20초 반복): 켠 채로 90°로 → 끄기 → 꺼진 채 180°로 → 켜기(결과) → 제자리 껐다 켜기 → 0°로 복귀
+let autoOn = false, autoStart = 0;
+function autoStep(ms) {
+  const s = (ms / 1000) % 20, ease = p => p * p * (3 - 2 * p);
+  const move = (a, b, t0, t1) => a + (b - a) * ease(Math.min(1, Math.max(0, (s - t0) / (t1 - t0))));
+  if (s < 2.5) return { power: true, angle: move(0, 90, 0.5, 2.5) };
+  if (s < 3.5) return { power: true, angle: 90 };
+  if (s < 8)   return { power: false, angle: move(90, 180, 4.5, 7) };      // 꺼진 채로 돌림
+  if (s < 13)  return { power: true, angle: 180 };                         // 켜자마자 180°
+  if (s < 14.5) return { power: false, angle: 180 };                       // 제자리로 껐다
+  if (s < 17.5) return { power: true, angle: 180 };                        // 켜기 → 같은 각도
+  return { power: true, angle: move(180, 0, 17.5, 19.8) };
+}
+function setAuto(on) {
+  autoOn = on; $("cAuto").checked = on;
+  if (on) autoStart = Date.now();
+}
+
+// 체험 모드 시작/멈춤 (버튼 클릭이 있어야 브라우저가 소리를 허락함)
+function updateDemoButton() { $("btnDemo").textContent = simTimer ? "■ 체험 멈추기" : "▶ 체험 시작 (소리 켜짐)"; }
+$("btnDemo").onclick = () => {
+  if (simTimer) { stopSim(); return; }
+  if (!settings.voice) { settings.voice = true; $("cVoice").checked = true; }
+  window.speechSynthesis?.resume();
+  $("sSim").value = 0;
+  $("cSim").checked = true; setSim(true); setAuto(true);
+};
+
+// ---------------- 버튼 / 슬라이더 ----------------
+$("btnConnect").onclick = connect;
+$("btnDisconnect").onclick = disconnect;
+$("btnTest").onclick = () => { const v = settings.voice; settings.voice = true; speak("전원이 켜졌어요. 현재 각도 180도"); settings.voice = v; };
+$("cAuto").onchange = e => setAuto(e.target.checked);
+$("cVoice").onchange = e => { settings.voice = e.target.checked; saveSettings(); };
+$("cSim").onchange = e => setSim(e.target.checked);
+$("sSim").oninput = e => { if (autoOn) setAuto(false); $("vSim").textContent = parseFloat(e.target.value).toFixed(1) + "°"; };
+
+function bindRange(id, key, label, fmt) {
+  const el = $(id);
+  el.oninput = () => { settings[key] = parseFloat(el.value); $(label).textContent = fmt(settings[key]); saveSettings(); };
+}
+function saveSettings() { try { localStorage.setItem("powerCycle-v1", JSON.stringify(settings)); } catch {} }
+bindRange("sTimeout", "timeout", "vTimeout", v => v.toFixed(1) + "초");
+bindRange("sStill", "still", "vStill", v => v.toFixed(1) + "°");
+
+// 지난번 설정 불러오기
+try {
+  const s = JSON.parse(localStorage.getItem("powerCycle-v1") || "null");
+  if (s) {
+    Object.assign(settings, s);
+    $("sTimeout").value = settings.timeout; $("vTimeout").textContent = settings.timeout.toFixed(1) + "초";
+    $("sStill").value = settings.still; $("vStill").textContent = settings.still.toFixed(1) + "°";
+    $("cVoice").checked = settings.voice;
+  }
+} catch {}
+
+if (!("serial" in navigator)) {
+  $("noSerial").style.display = "block";
+  $("btnConnect").disabled = true;
+}
+// 체험 모드 배너: 주소 끝에 ?demo 를 붙였거나 엔코더 연결을 못 하는 브라우저면 표시
+if (new URLSearchParams(location.search).has("demo") || !("serial" in navigator)) {
+  $("demoBanner").style.display = "flex";
+}
+setPower("idle", "‘엔코더 연결’ 버튼을 눌러 COM 포트를 선택하세요.");
+</script>
+</body>
+</html>
